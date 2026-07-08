@@ -1,8 +1,8 @@
 from io import BytesIO
+import re
 
 import pandas as pd
 from openpyxl import load_workbook
-
 
 UPC_COL = "A"
 OUTPUT_COL = "I"
@@ -10,7 +10,9 @@ START_ROW = 3
 
 
 def normalize_upc(value):
-    """Normalize UPC values so Excel and Snowflake values match cleanly."""
+    """
+    Convert UPC values to a consistent string so Excel and Snowflake values match.
+    """
     if value is None or pd.isna(value):
         return None
 
@@ -20,17 +22,54 @@ def normalize_upc(value):
     return str(value).strip()
 
 
-def load_sales_lookup_from_snowflake(
-    conn,
-    sales_table: str,
-    upc_column: str,
-    sales_amount_column: str,
-    sale_date_column: str,
-):
+def get_active_snowflake_session():
+    """
+    Returns the active Snowflake session when running inside Streamlit in Snowflake.
+    """
+    try:
+        from snowflake.snowpark.context import get_active_session
+        return get_active_session()
+    except Exception as exc:
+        raise RuntimeError(
+            "This app must run inside Streamlit in Snowflake. "
+            "The active Snowflake session was not available."
+        ) from exc
+
+
+def _validate_identifier(value, label):
+    """
+    Basic safety check for Snowflake identifiers entered in the UI.
+    Allows:
+      - TABLE_NAME
+      - DB.SCHEMA.TABLE_NAME
+      - SCHEMA.TABLE_NAME
+    """
+    if not value or not isinstance(value, str):
+        raise ValueError(f"{label} cannot be empty.")
+
+    allowed = re.compile(r"^[A-Za-z0-9_.$]+$")
+    if not allowed.fullmatch(value):
+        raise ValueError(
+            f"{label} contains invalid characters. Use only letters, numbers, "
+            f"underscore, dot, and dollar sign."
+        )
+
+    return value
+
+
+def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sale_date_column):
     """
     Query Snowflake for UPC-level sales totals over the last 12 months.
-    Returns a dict like: { '123456789012': 0, '999999999999': 42.50 }
+    Returns:
+      sales_lookup: dict {UPC: total_sales}
+      matched_upcs: count of UPCs returned from Snowflake
+      total_upcs: count of distinct UPCs returned from Snowflake query
     """
+    sales_table = _validate_identifier(sales_table, "Sales table")
+    upc_column = _validate_identifier(upc_column, "UPC column")
+    sales_amount_column = _validate_identifier(sales_amount_column, "Sales amount column")
+    sale_date_column = _validate_identifier(sale_date_column, "Sale date column")
+
     sql = f"""
         SELECT
             TO_VARCHAR({upc_column}) AS UPC,
@@ -40,9 +79,16 @@ def load_sales_lookup_from_snowflake(
         GROUP BY TO_VARCHAR({upc_column})
     """
 
-    df = conn.query(sql, ttl="10m")
+    df = session.sql(sql).to_pandas()
+
+    if df.empty:
+        return {}, 0, 0
+
     df["UPC"] = df["UPC"].apply(normalize_upc)
-    return dict(zip(df["UPC"], df["TOTAL_SALES"]))
+    df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
+
+    sales_lookup = dict(zip(df["UPC"], df["TOTAL_SALES"]))
+    return sales_lookup, len(sales_lookup), len(sales_lookup)
 
 
 def update_partner_catalog(workbook_file, sales_lookup):
@@ -50,22 +96,46 @@ def update_partner_catalog(workbook_file, sales_lookup):
     Reads the first worksheet in the uploaded workbook.
     For each row starting at row 3:
       - read UPC from column A
-      - if sales over last 12 months are 0, write '0 USD' to column I
-    Returns workbook bytes.
+      - if total sales over the last 12 months are zero or missing, write '0 USD' to column I
+
+    Returns:
+      workbook bytes and a summary dictionary
     """
     wb = load_workbook(workbook_file)
     ws = wb[wb.sheetnames[0]]
 
+    total_rows = 0
+    zero_sales_rows = 0
+    missing_rows = 0
+    missing_upcs = []
+
     for row in range(START_ROW, ws.max_row + 1):
         upc = normalize_upc(ws[f"{UPC_COL}{row}"].value)
+
         if not upc:
             continue
 
-        total_sales = sales_lookup.get(upc, 0)
-        if total_sales == 0:
+        total_rows += 1
+        total_sales = sales_lookup.get(upc, None)
+
+        if total_sales is None:
+            missing_rows += 1
+            missing_upcs.append(upc)
             ws[f"{OUTPUT_COL}{row}"] = "0 USD"
+            zero_sales_rows += 1
+        elif float(total_sales) == 0:
+            ws[f"{OUTPUT_COL}{row}"] = "0 USD"
+            zero_sales_rows += 1
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
-    return output
+
+    summary = {
+        "total_rows": total_rows,
+        "zero_sales_rows": zero_sales_rows,
+        "missing_rows": missing_rows,
+        "missing_upcs": missing_upcs,
+    }
+
+    return output, summary
