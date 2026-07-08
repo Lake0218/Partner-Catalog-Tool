@@ -1,63 +1,35 @@
 # Partner Catalog Zero-Sales Tool
 
-A Streamlit app that:
+A Streamlit in Snowflake app that reads UPCs from column A starting at row 3 in a partner catalog Excel file, checks 12-month sales totals in Snowflake, and writes `0 USD` into column I for UPCs with zero sales.
 
-- uploads a partner catalog Excel file
-- reads UPCs from column A starting at row 3
-- queries Snowflake for sales over the last 12 months
-- writes `0 USD` into column I for UPCs with zero sales
-- downloads an updated workbook
+## How it works
 
-## Project structure
+- Upload the partner catalog `.xlsx`
+- Enter the Snowflake sales table and column names
+- The app queries Snowflake for sales totals over the last 12 months
+- The app updates column I on rows where UPC sales are zero or missing
+- Download the updated workbook
 
-```text
-partner_catalog_zero_sales_tool/
-├── app.py
-├── processor.py
-├── requirements.txt
-├── README.md
-└── .streamlit/
-    └── secrets.toml
-```
+## Workbook assumptions
 
-## Setup
+- UPCs are in **column A**
+- Data starts on **row 3**
+- Output should be written to **column I**
 
-1. Create a virtual environment.
-2. Install dependencies:
+## Snowflake assumptions
 
-```bash
-pip install -r requirements.txt
-```
+The sales table must contain:
 
-3. Add Snowflake credentials to `.streamlit/secrets.toml`.
-4. Run the app:
+- a UPC column
+- a sales amount column
+- a sale date column
 
-```bash
-streamlit run app.py
-```
+Example query shape:
 
-## Snowflake config
-
-Use `.streamlit/secrets.toml` like this:
-
-```toml
-[connections.snowflake]
-account = "YOUR_ACCOUNT"
-user = "YOUR_USERNAME"
-password = "YOUR_PASSWORD"
-role = "YOUR_ROLE"
-warehouse = "YOUR_WAREHOUSE"
-database = "YOUR_DATABASE"
-schema = "YOUR_SCHEMA"
-```
-
-## Assumptions
-
-- UPCs are in column A.
-- Data starts on row 3.
-- The output column is I.
-- Snowflake has a table with UPC, sale date, and sales amount.
-
-## Notes
-
-The app writes the text `0 USD` into the workbook. If you later want a numeric zero with a currency format instead, that can be changed in `processor.py`.
+```sql
+SELECT
+  TO_VARCHAR(UPC) AS UPC,
+  COALESCE(SUM(SALES_AMOUNT), 0) AS TOTAL_SALES
+FROM SALES_TABLE
+WHERE SALE_DATE >= DATEADD(month, -12, CURRENT_DATE())
+GROUP BY TO_VARCHAR(UPC)
