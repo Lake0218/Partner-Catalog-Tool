@@ -12,7 +12,7 @@ st.write(
     "over the last 12 months equal zero."
 )
 
-conn = st.connection("snowflake")
+uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
 
 with st.sidebar:
     st.header("Snowflake settings")
@@ -22,7 +22,19 @@ with st.sidebar:
     sale_date_column = st.text_input("Sale date column", value="SALE_DATE")
     st.caption("Use trusted internal table and column names.")
 
-uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
+    st.subheader("Required Streamlit secrets")
+    st.code(
+        """[connections.snowflake]
+account = "YOUR_ACCOUNT"
+user = "YOUR_USER"
+password = "YOUR_PASSWORD"
+warehouse = "YOUR_WAREHOUSE"
+database = "YOUR_DATABASE"
+schema = "YOUR_SCHEMA"
+role = "YOUR_ROLE"
+""",
+        language="toml",
+    )
 
 process_clicked = st.button(
     "Process catalog",
@@ -30,8 +42,20 @@ process_clicked = st.button(
     disabled=uploaded_catalog is None,
 )
 
+def get_snowflake_connection():
+    try:
+        return st.connection("snowflake")
+    except Exception:
+        st.error(
+            "Missing Snowflake connection configuration. Add the secrets block "
+            "shown in the sidebar to your Streamlit app settings."
+        )
+        st.stop()
+
 if process_clicked:
     try:
+        conn = get_snowflake_connection()
+
         with st.spinner("Querying Snowflake for the last 12 months of sales..."):
             sales_lookup, matched_upcs = load_sales_lookup(
                 conn=conn,
