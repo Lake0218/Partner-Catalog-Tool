@@ -10,9 +10,6 @@ START_ROW = 3
 
 
 def normalize_upc(value):
-    """
-    Convert UPC values to a consistent string so Excel and Snowflake values match.
-    """
     if value is None or pd.isna(value):
         return None
 
@@ -22,28 +19,7 @@ def normalize_upc(value):
     return str(value).strip()
 
 
-def get_active_snowflake_session():
-    """
-    Returns the active Snowflake session when running inside Streamlit in Snowflake.
-    """
-    try:
-        from snowflake.snowpark.context import get_active_session
-        return get_active_session()
-    except Exception as exc:
-        raise RuntimeError(
-            "This app must run inside Streamlit in Snowflake. "
-            "The active Snowflake session was not available."
-        ) from exc
-
-
 def _validate_identifier(value, label):
-    """
-    Basic safety check for Snowflake identifiers entered in the UI.
-    Allows:
-      - TABLE_NAME
-      - DB.SCHEMA.TABLE_NAME
-      - SCHEMA.TABLE_NAME
-    """
     if not value or not isinstance(value, str):
         raise ValueError(f"{label} cannot be empty.")
 
@@ -57,13 +33,7 @@ def _validate_identifier(value, label):
     return value
 
 
-def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sale_date_column):
-    """
-    Query Snowflake for UPC-level sales totals over the last 12 months.
-    Returns:
-      sales_lookup: dict {UPC: total_sales}
-      matched_upcs: count of UPCs returned from Snowflake
-    """
+def load_sales_lookup(conn, sales_table, upc_column, sales_amount_column, sale_date_column):
     sales_table = _validate_identifier(sales_table, "Sales table")
     upc_column = _validate_identifier(upc_column, "UPC column")
     sales_amount_column = _validate_identifier(sales_amount_column, "Sales amount column")
@@ -78,7 +48,7 @@ def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sal
         GROUP BY TO_VARCHAR({upc_column})
     """
 
-    df = session.sql(sql).to_pandas()
+    df = conn.query(sql)
 
     if df.empty:
         return {}, 0
@@ -91,15 +61,6 @@ def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sal
 
 
 def update_partner_catalog(workbook_file, sales_lookup):
-    """
-    Reads the first worksheet in the uploaded workbook.
-    For each row starting at row 3:
-      - read UPC from column A
-      - if total sales over the last 12 months are zero or missing, write '0 USD' to column I
-
-    Returns:
-      workbook bytes and a summary dictionary
-    """
     wb = load_workbook(workbook_file)
     ws = wb[wb.sheetnames[0]]
 
