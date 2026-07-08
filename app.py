@@ -72,4 +72,3 @@ if process_clicked:
 
     except Exception as e:
         st.error(f"Something went wrong: {e}")
-```
