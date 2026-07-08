@@ -99,3 +99,4 @@ def update_partner_catalog(workbook_file, sales_lookup):
     }
 
     return output, summary
+    }
