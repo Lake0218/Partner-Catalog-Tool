@@ -1,22 +1,18 @@
 import streamlit as st
 import pandas as pd
 
-from processor import (
-    get_active_snowflake_session,
-    load_sales_lookup,
-    update_partner_catalog,
-)
+from processor import load_sales_lookup, update_partner_catalog
 
 st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
 st.title("Partner Catalog Zero-Sales Tool")
 
 st.write(
     "Upload the partner catalog Excel file. The app reads UPCs from column A "
-    "starting at row 3 and writes `0 USD` into column I when Snowflake sales over "
-    "the last 12 months equal zero."
+    "starting at row 3 and writes `0 USD` into column I when Snowflake sales "
+    "over the last 12 months equal zero."
 )
 
-session = get_active_snowflake_session()
+conn = st.connection("snowflake")
 
 with st.sidebar:
     st.header("Snowflake settings")
@@ -38,7 +34,7 @@ if process_clicked:
     try:
         with st.spinner("Querying Snowflake for the last 12 months of sales..."):
             sales_lookup, matched_upcs = load_sales_lookup(
-                session=session,
+                conn=conn,
                 sales_table=sales_table,
                 upc_column=upc_column,
                 sales_amount_column=sales_amount_column,
