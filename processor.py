@@ -18,7 +18,7 @@ def normalize_upc(value):
     return str(value).strip()
 
 
-def load_sales_lookup(session, lookback_months=24):
+def load_sales_lookup(conn, lookback_months=24):
     sql = f"""
         SELECT
             ITEM_BARCODE AS UPC,
@@ -28,11 +28,17 @@ def load_sales_lookup(session, lookback_months=24):
         GROUP BY ITEM_BARCODE
     """
 
-    df = session.sql(sql).to_pandas()
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
 
-    if df.empty:
+    if not rows:
         return {}
 
+    df = pd.DataFrame(rows, columns=["UPC", "TOTAL_SALES"])
     df["UPC"] = df["UPC"].apply(normalize_upc)
     df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
 
@@ -58,7 +64,6 @@ def update_partner_catalog(workbook_file, sales_lookup):
 
     for row in range(START_ROW, ws.max_row + 1):
         upc = normalize_upc(ws[f"{UPC_COL}{row}"].value)
-
         if not upc:
             continue
 
