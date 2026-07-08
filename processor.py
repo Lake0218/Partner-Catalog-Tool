@@ -48,10 +48,16 @@ def load_sales_lookup(conn, sales_table, upc_column, sales_amount_column, sale_d
         GROUP BY TO_VARCHAR({upc_column})
     """
 
-    df = conn.query(sql)
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        rows = cur.fetchall()
+        if not rows:
+            return {}, 0
 
-    if df.empty:
-        return {}, 0
+        df = pd.DataFrame(rows, columns=["UPC", "TOTAL_SALES"])
+    finally:
+        cur.close()
 
     df["UPC"] = df["UPC"].apply(normalize_upc)
     df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
