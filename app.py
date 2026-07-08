@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import snowflake.connector
 
 from processor import load_sales_lookup, update_partner_catalog
 
@@ -16,22 +17,16 @@ uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xls
 
 with st.sidebar:
     st.header("Snowflake settings")
-    sales_table = st.text_input("Sales table", value="SALES_TABLE")
-    upc_column = st.text_input("UPC column in Snowflake", value="UPC")
-    sales_amount_column = st.text_input("Sales amount column", value="SALES_AMOUNT")
-    sale_date_column = st.text_input("Sale date column", value="SALE_DATE")
-    st.caption("Use trusted internal table and column names.")
-
-    st.subheader("Required Streamlit secrets")
+    st.caption("These values come from Streamlit Secrets.")
     st.code(
         """[connections.snowflake]
-account = "YOUR_ACCOUNT"
-user = "YOUR_USER"
+account = "JD38204-MT76814"
+user = "L.HAWK@FETCHREWARDS.COM"
 password = "YOUR_PASSWORD"
 warehouse = "YOUR_WAREHOUSE"
 database = "YOUR_DATABASE"
 schema = "YOUR_SCHEMA"
-role = "YOUR_ROLE"
+role = "H_DATASCI"
 """,
         language="toml",
     )
@@ -44,13 +39,29 @@ process_clicked = st.button(
 
 def get_snowflake_connection():
     try:
-        return st.connection("snowflake")
+        sf = st.secrets["connections"]["snowflake"]
     except Exception:
         st.error(
-            "Missing Snowflake connection configuration. Add the secrets block "
-            "shown in the sidebar to your Streamlit app settings."
+            "Missing Streamlit secrets. Add the [connections.snowflake] block "
+            "in the app settings."
         )
         st.stop()
+
+    required = ["account", "user", "password"]
+    missing = [key for key in required if not sf.get(key)]
+    if missing:
+        st.error(f"Missing required Snowflake secret values: {', '.join(missing)}")
+        st.stop()
+
+    return snowflake.connector.connect(
+        account=sf["account"],
+        user=sf["user"],
+        password=sf["password"],
+        role=sf.get("role"),
+        warehouse=sf.get("warehouse"),
+        database=sf.get("database"),
+        schema=sf.get("schema"),
+    )
 
 if process_clicked:
     try:
@@ -59,10 +70,10 @@ if process_clicked:
         with st.spinner("Querying Snowflake for the last 12 months of sales..."):
             sales_lookup, matched_upcs = load_sales_lookup(
                 conn=conn,
-                sales_table=sales_table,
-                upc_column=upc_column,
-                sales_amount_column=sales_amount_column,
-                sale_date_column=sale_date_column,
+                sales_table="YOUR_DATABASE.YOUR_SCHEMA.SALES_TABLE",
+                upc_column="UPC",
+                sales_amount_column="SALES_AMOUNT",
+                sale_date_column="SALE_DATE",
             )
 
         with st.spinner("Updating workbook..."):
