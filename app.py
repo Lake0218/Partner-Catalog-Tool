@@ -1,17 +1,8 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from openpyxl import load_workbook
-from snowflake.snowpark.context import get_active_session
+import snowflake.connector
 
 from processor import load_sales_lookup, update_partner_catalog
-
-LOOKBACK_MONTHS = 24
-
-UPC_COL = "A"
-OUTPUT_COL = "I"
-START_ROW = 3
-
 
 st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
 st.title("Partner Catalog Zero-Sales Tool")
@@ -19,22 +10,75 @@ st.title("Partner Catalog Zero-Sales Tool")
 st.write(
     "Upload the partner catalog Excel file. The app reads UPCs from column A "
     "starting at row 3 and writes `0 USD` into column I when Snowflake sales "
-    f"over the last {LOOKBACK_MONTHS} months equal zero."
+    "over the last 12 months equal zero."
 )
 
 uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
 
-if st.button("Process", disabled=uploaded_catalog is None):
-    try:
-        session = get_active_session()
+with st.sidebar:
+    st.header("Snowflake settings")
+    st.caption("These values come from Streamlit Secrets.")
+    st.code(
+        """[connections.snowflake]
+account = "JD38204-MT76814"
+user = "L.HAWK@FETCHREWARDS.COM"
+password = "YOUR_PASSWORD"
+warehouse = "YOUR_WAREHOUSE"
+database = "YOUR_DATABASE"
+schema = "YOUR_SCHEMA"
+role = "H_DATASCI"
+""",
+        language="toml",
+    )
 
-        with st.spinner(f"Querying Snowflake for the last {LOOKBACK_MONTHS} months of sales..."):
-            sales_lookup = load_sales_lookup(session, lookback_months=LOOKBACK_MONTHS)
+process_clicked = st.button(
+    "Process catalog",
+    type="primary",
+    disabled=uploaded_catalog is None,
+)
+
+def get_snowflake_connection():
+    try:
+        sf = st.secrets["connections"]["snowflake"]
+    except Exception:
+        st.error(
+            "Missing Streamlit secrets. Add the [connections.snowflake] block "
+            "in the app settings."
+        )
+        st.stop()
+
+    required = ["account", "user", "password"]
+    missing = [key for key in required if not sf.get(key)]
+    if missing:
+        st.error(f"Missing required Snowflake secret values: {', '.join(missing)}")
+        st.stop()
+
+    return snowflake.connector.connect(
+        account=sf["account"],
+        user=sf["user"],
+        password=sf["password"],
+        role=sf.get("role"),
+        warehouse=sf.get("warehouse"),
+        database=sf.get("database"),
+        schema=sf.get("schema"),
+    )
+
+if process_clicked:
+    try:
+        conn = get_snowflake_connection()
+
+        with st.spinner("Querying Snowflake for the last 12 months of sales..."):
+            sales_lookup, matched_upcs = load_sales_lookup(
+                conn=conn,
+                sales_table="YOUR_DATABASE.YOUR_SCHEMA.SALES_TABLE",
+                upc_column="UPC",
+                sales_amount_column="SALES_AMOUNT",
+                sale_date_column="SALE_DATE",
+            )
 
         with st.spinner("Updating workbook..."):
-            workbook_bytes = BytesIO(uploaded_catalog.getvalue())
             updated_file, summary = update_partner_catalog(
-                workbook_file=workbook_bytes,
+                workbook_file=uploaded_catalog,
                 sales_lookup=sales_lookup,
             )
 
@@ -43,7 +87,7 @@ if st.button("Process", disabled=uploaded_catalog is None):
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("UPCs in file", summary["total_rows"])
         col2.metric("UPCs with zero sales", summary["zero_sales_rows"])
-        col3.metric("UPCs found in Snowflake", summary["matched_rows"])
+        col3.metric("UPCs found in Snowflake", matched_upcs)
         col4.metric("UPCs missing in Snowflake", summary["missing_rows"])
 
         st.download_button(
