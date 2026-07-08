@@ -1,4 +1,3 @@
-```python
 from io import BytesIO
 import re
 
@@ -139,5 +138,3 @@ def update_partner_catalog(workbook_file, sales_lookup):
     }
 
     return output, summary
-```
-
