@@ -1,3 +1,4 @@
+```python
 from io import BytesIO
 import re
 
@@ -63,7 +64,6 @@ def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sal
     Returns:
       sales_lookup: dict {UPC: total_sales}
       matched_upcs: count of UPCs returned from Snowflake
-      total_upcs: count of distinct UPCs returned from Snowflake query
     """
     sales_table = _validate_identifier(sales_table, "Sales table")
     upc_column = _validate_identifier(upc_column, "UPC column")
@@ -82,13 +82,13 @@ def load_sales_lookup(session, sales_table, upc_column, sales_amount_column, sal
     df = session.sql(sql).to_pandas()
 
     if df.empty:
-        return {}, 0, 0
+        return {}, 0
 
     df["UPC"] = df["UPC"].apply(normalize_upc)
     df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
 
     sales_lookup = dict(zip(df["UPC"], df["TOTAL_SALES"]))
-    return sales_lookup, len(sales_lookup), len(sales_lookup)
+    return sales_lookup, len(sales_lookup)
 
 
 def update_partner_catalog(workbook_file, sales_lookup):
@@ -139,3 +139,5 @@ def update_partner_catalog(workbook_file, sales_lookup):
     }
 
     return output, summary
+```
+
