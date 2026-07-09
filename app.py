@@ -369,11 +369,21 @@ render_app_header()
 with st.sidebar:
     st.header("Snowflake settings")
     st.caption(
-        "Local browser SSO is for development on one computer. Shared users "
-        "should open the deployed Streamlit app from Snowflake."
+        "Shared Streamlit deployments need server-side Snowflake credentials. "
+        "Local browser SSO is only for development on one computer."
     )
     st.code(
-        """# Optional for local development only:
+        """# Shared deployment:
+[connections.snowflake]
+account = "JD38204-MT76814"
+user = "YOUR_SERVICE_USER"
+password = "YOUR_SERVICE_PASSWORD"
+warehouse = "YOUR_WAREHOUSE"
+database = "YOUR_DATABASE"
+schema = "YOUR_SCHEMA"
+role = "H_DATASCI"
+
+# Local development only:
 [connections.snowflake]
 account = "JD38204-MT76814"
 authenticator = "externalbrowser"
@@ -412,6 +422,25 @@ def get_sso_base_config():
     config["authenticator"] = "externalbrowser"
     config.setdefault("login_timeout", 300)
     return config
+
+
+def get_authenticator(config):
+    return str(config.get("authenticator", "")).strip().lower()
+
+
+def has_server_side_credentials(config):
+    if not config.get("account"):
+        return False
+
+    has_user = bool(config.get("user") or config.get("username"))
+    has_secret = any(
+        config.get(key)
+        for key in ("password", "private_key", "private_key_file", "token")
+    )
+    authenticator = get_authenticator(config)
+    has_server_authenticator = bool(authenticator and authenticator != "externalbrowser")
+
+    return has_user and (has_secret or has_server_authenticator)
 
 
 def get_request_hostname():
@@ -460,6 +489,24 @@ def get_streamlit_runtime_connection():
 
     user_label = get_streamlit_user_label()
     st.success(f"Connected through the Streamlit Snowflake runtime as {user_label}.")
+    return conn, user_label
+
+
+def get_configured_snowflake_connection(config):
+    try:
+        conn = snowflake.connector.connect(**config)
+    except Exception as exc:
+        st.error("Could not connect to Snowflake with the configured deployment secrets.")
+        st.info(
+            "For shared Streamlit deployments, configure a server-side Snowflake "
+            "user/password, key pair, or OAuth credential in app secrets. Do not "
+            "use `authenticator = \"externalbrowser\"` on a shared URL."
+        )
+        st.exception(exc)
+        return None, None
+
+    user_label = config.get("user") or config.get("username") or "configured Snowflake user"
+    st.success(f"Connected to Snowflake as {user_label}.")
     return conn, user_label
 
 
@@ -553,10 +600,15 @@ def wait_for_auth_update(auth_state):
 
 
 def render_snowflake_sign_in():
-    config = get_sso_base_config()
+    config = get_local_snowflake_config()
 
     if not config.get("account"):
         return get_streamlit_runtime_connection()
+
+    if has_server_side_credentials(config):
+        return get_configured_snowflake_connection(config)
+
+    config = get_sso_base_config()
 
     if not is_local_browser_request():
         request_hostname = get_request_hostname() or "this shared host"
@@ -568,9 +620,10 @@ def render_snowflake_sign_in():
             "Python process."
         )
         st.warning(
-            "For multiple users, deploy this app in Streamlit in Snowflake and "
-            "share it from Snowsight. For local testing, each user must run the "
-            "app on their own computer."
+            "For Streamlit Community Cloud or another shared host, replace "
+            "`authenticator = \"externalbrowser\"` with server-side Snowflake "
+            "credentials in app secrets. For per-user Snowflake auth, deploy this "
+            "app as Streamlit in Snowflake and share it from Snowsight."
         )
         return None, None
 
