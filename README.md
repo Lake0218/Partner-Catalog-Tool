@@ -34,7 +34,20 @@ The selected business ID is used to scope the Snowflake sales query for the uplo
 
 ## Snowflake authentication
 
-For shared team use, deploy the app as Streamlit in Snowflake and share it through Snowsight. Users sign in to Snowflake before opening the app, and the app uses Streamlit's Snowflake runtime connection.
+For shared team use, the best per-user authentication path is to deploy the app as Streamlit in Snowflake and share it through Snowsight. Users sign in to Snowflake before opening the app, and the app uses Streamlit's Snowflake runtime connection.
+
+For Streamlit Community Cloud or another shared Streamlit host, configure server-side Snowflake credentials in app secrets. Do not use `authenticator = "externalbrowser"` on a shared URL:
+
+```toml
+[connections.snowflake]
+account = "JD38204-MT76814"
+user = "YOUR_SERVICE_USER"
+password = "YOUR_SERVICE_PASSWORD"
+warehouse = "YOUR_WAREHOUSE"
+database = "YOUR_DATABASE"
+schema = "YOUR_SCHEMA"
+role = "H_DATASCI"
+```
 
 For local development, create `.streamlit/secrets.toml` with shared Snowflake account settings only. Do not include a `user` or `password`; the person running the app enters their own Snowflake email in the app:
 
