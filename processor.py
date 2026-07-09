@@ -1,4 +1,5 @@
 from io import BytesIO
+from inspect import Parameter, signature
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -6,6 +7,8 @@ from openpyxl import load_workbook
 UPC_COL = "A"
 OUTPUT_COL = "I"
 START_ROW = 3
+HEADER_ROWS = range(1, START_ROW)
+HEADERS_TO_REMOVE = {"status", "errors", "warnings"}
 
 
 def normalize_upc(value):
@@ -18,13 +21,71 @@ def normalize_upc(value):
     return str(value).strip()
 
 
-def run_snowflake_query(conn, sql):
+def normalize_header(value):
+    if value is None or pd.isna(value):
+        return ""
+
+    return str(value).strip().lower()
+
+
+def remove_output_columns(ws):
+    columns_to_remove = []
+
+    for column in range(1, ws.max_column + 1):
+        headers = [
+            normalize_header(ws.cell(row=row, column=column).value)
+            for row in HEADER_ROWS
+        ]
+        if any(header in HEADERS_TO_REMOVE for header in headers):
+            columns_to_remove.append(column)
+
+    for column in reversed(columns_to_remove):
+        ws.delete_cols(column)
+
+
+def supports_query_ttl(query):
+    try:
+        parameters = signature(query).parameters
+    except (TypeError, ValueError):
+        return False
+
+    return "ttl" in parameters or any(
+        parameter.kind == Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def supports_query_params(query):
+    try:
+        parameters = signature(query).parameters
+    except (TypeError, ValueError):
+        return False
+
+    return "params" in parameters or any(
+        parameter.kind == Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def run_snowflake_query(conn, sql, params=None):
     if hasattr(conn, "query"):
-        return conn.query(sql)
+        query_kwargs = {}
+        if supports_query_ttl(conn.query):
+            query_kwargs["ttl"] = 0
+        if params is not None:
+            if not supports_query_params(conn.query):
+                raise ValueError(
+                    "This Snowflake connection does not support query parameters."
+                )
+            query_kwargs["params"] = params
+        return conn.query(sql, **query_kwargs)
 
     cur = conn.cursor()
     try:
-        cur.execute(sql)
+        if params is None:
+            cur.execute(sql)
+        else:
+            cur.execute(sql, params)
         rows = cur.fetchall()
         columns = [column[0] for column in cur.description]
     finally:
@@ -33,7 +94,10 @@ def run_snowflake_query(conn, sql):
     return pd.DataFrame(rows, columns=columns)
 
 
-def load_sales_lookup(conn):
+def load_sales_lookup(conn, business_id):
+    if not business_id:
+        raise ValueError("A business must be selected before querying Snowflake sales data.")
+
     sql = """
         WITH partner_barcodes AS (
             SELECT DISTINCT fc.barcode
@@ -42,7 +106,7 @@ def load_sales_lookup(conn):
                     ON fc.brand_id = b.id
                 LEFT JOIN analytics_prod.durin_service.p_business biz
                     ON b.business_id = biz.id
-            WHERE biz.id = '61dc504a5806c5140572e822'
+            WHERE biz.id = %s
                 AND fc.deleted_date IS NULL
                 AND fc.added_date < DATEADD(MONTH, -6, CURRENT_DATE)
                 AND COALESCE(b.deleted_ts, b.be_soft_deleted_ts) IS NULL
@@ -60,7 +124,7 @@ def load_sales_lookup(conn):
         ORDER BY pb.barcode
     """
 
-    df = run_snowflake_query(conn, sql)
+    df = run_snowflake_query(conn, sql, params=(business_id,))
     if df.empty:
         return {}
 
@@ -103,6 +167,8 @@ def update_partner_catalog(workbook_file, sales_lookup):
         else:
             missing_rows += 1
             missing_upcs.append(upc)
+
+    remove_output_columns(ws)
 
     output = BytesIO()
     wb.save(output)

@@ -6,10 +6,14 @@ A Streamlit in Snowflake app that reads UPCs from column A starting at row 3 in 
 
 - Select the business you are working in
 - Upload the partner catalog `.xlsx`
+- Click `Process catalog` to run the Snowflake sales query and update the workbook
 - Enter the Snowflake sales table and column names
 - The app queries Snowflake for sales totals over the last 24 months
 - The app updates column I on rows where UPC sales are zero or missing
+- The output workbook removes columns with `Status`, `Errors`, or `warnings` headers
 - Download the updated workbook
+
+Sales data queries are run with Streamlit query caching disabled so each workbook update uses fresh Snowflake results.
 
 ## Business selector
 
@@ -20,7 +24,7 @@ SELECT ID, NAME
 FROM ANALYTICS_PROD.DURIN_SERVICE.P_BUSINESS
 ```
 
-The selected business ID is saved in Streamlit session state as `selected_business_id` so it can be added to the sales query later.
+The selected business ID is used to scope the Snowflake sales query for the uploaded workbook.
 
 ## Workbook assumptions
 
