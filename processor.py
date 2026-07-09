@@ -33,20 +33,38 @@ def run_snowflake_query(conn, sql):
     return pd.DataFrame(rows, columns=columns)
 
 
-def load_sales_lookup(conn, lookback_months=24):
-    sql = f"""
+def load_sales_lookup(conn):
+    sql = """
+        WITH partner_barcodes AS (
+            SELECT DISTINCT fc.barcode
+            FROM fetch_services_prod.staging.fido_catalog_cleaned_stage fc
+                LEFT JOIN analytics_prod.durin_service.p_brands b
+                    ON fc.brand_id = b.id
+                LEFT JOIN analytics_prod.durin_service.p_business biz
+                    ON b.business_id = biz.id
+            WHERE biz.id = '61dc504a5806c5140572e822'
+                AND fc.deleted_date IS NULL
+                AND fc.added_date < DATEADD(MONTH, -6, CURRENT_DATE)
+                AND COALESCE(b.deleted_ts, b.be_soft_deleted_ts) IS NULL
+                AND biz.deleted_ts IS NULL
+        )
         SELECT
-            ITEM_BARCODE AS UPC,
-            COALESCE(SUM(ITEM_FINAL_EXTENDED_PRICE), 0) AS TOTAL_SALES
-        FROM ANALYTICS_PROD.FETCH360.TRANSACTION360
-        WHERE RECEIPT_PURCHASE_DATE >= DATEADD(month, -{lookback_months}, CURRENT_DATE())
-        GROUP BY ITEM_BARCODE
+            pb.barcode AS UPC,
+            SUM(ri.final_sale) AS TOTAL_SALES
+        FROM partner_barcodes AS pb
+            LEFT JOIN analytics_prod.partner_analytics.pa_receipts_items AS ri
+                ON ri.barcode = pb.barcode
+                AND ri.purchase_date::DATE >= DATEADD(MONTH, -24, CURRENT_DATE)
+        GROUP BY pb.barcode
+        HAVING TOTAL_SALES IS NULL
+        ORDER BY pb.barcode
     """
 
     df = run_snowflake_query(conn, sql)
     if df.empty:
         return {}
 
+    df.columns = [str(column).upper() for column in df.columns]
     df["UPC"] = df["UPC"].apply(normalize_upc)
     df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
 
@@ -76,18 +94,15 @@ def update_partner_catalog(workbook_file, sales_lookup):
             continue
 
         total_rows += 1
-        total_sales = sales_lookup.get(upc)
+        has_zero_sales = upc in sales_lookup
 
-        if total_sales is None:
-            missing_rows += 1
-            missing_upcs.append(upc)
+        if has_zero_sales:
+            matched_rows += 1
             ws[f"{OUTPUT_COL}{row}"] = "0 USD"
             zero_sales_rows += 1
         else:
-            matched_rows += 1
-            if float(total_sales) == 0:
-                ws[f"{OUTPUT_COL}{row}"] = "0 USD"
-                zero_sales_rows += 1
+            missing_rows += 1
+            missing_upcs.append(upc)
 
     output = BytesIO()
     wb.save(output)
