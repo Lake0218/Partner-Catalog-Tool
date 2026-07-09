@@ -18,6 +18,20 @@ def normalize_upc(value):
     return str(value).strip()
 
 
+def run_snowflake_query(conn, sql):
+    if hasattr(conn, "query"):
+        return conn.query(sql)
+
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+
+    return pd.DataFrame(rows, columns=["UPC", "TOTAL_SALES"])
+
+
 def load_sales_lookup(conn, lookback_months=24):
     sql = f"""
         SELECT
@@ -28,17 +42,10 @@ def load_sales_lookup(conn, lookback_months=24):
         GROUP BY ITEM_BARCODE
     """
 
-    cur = conn.cursor()
-    try:
-        cur.execute(sql)
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-
-    if not rows:
+    df = run_snowflake_query(conn, sql)
+    if df.empty:
         return {}
 
-    df = pd.DataFrame(rows, columns=["UPC", "TOTAL_SALES"])
     df["UPC"] = df["UPC"].apply(normalize_upc)
     df["TOTAL_SALES"] = pd.to_numeric(df["TOTAL_SALES"], errors="coerce").fillna(0)
 
