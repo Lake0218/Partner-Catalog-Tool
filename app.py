@@ -1,3 +1,4 @@
+import hashlib
 import threading
 import time
 import webbrowser
@@ -17,6 +18,9 @@ businesses = reload(businesses)
 st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
 WEBBROWSER_CAPTURE_LOCK = threading.Lock()
 LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+CATALOG_RESULT_KEY = "catalog_process_result"
+CATALOG_RESULT_PROCESS_KEY = "catalog_process_result_key"
+CATALOG_ERROR_PROCESS_KEY = "catalog_process_error_key"
 
 
 def inject_styles():
@@ -693,6 +697,75 @@ def select_business(conn, snowflake_user):
     return selected_business_name, selected_business_id
 
 
+def get_uploaded_catalog_signature(uploaded_catalog):
+    if uploaded_catalog is None:
+        return None
+
+    file_bytes = uploaded_catalog.getvalue()
+    return (
+        uploaded_catalog.name,
+        len(file_bytes),
+        hashlib.sha256(file_bytes).hexdigest(),
+    )
+
+
+def get_catalog_process_key(selected_business_id, uploaded_catalog):
+    upload_signature = get_uploaded_catalog_signature(uploaded_catalog)
+    if not selected_business_id or upload_signature is None:
+        return None
+
+    return selected_business_id, upload_signature
+
+
+def clear_catalog_process_state():
+    st.session_state.pop(CATALOG_RESULT_KEY, None)
+    st.session_state.pop(CATALOG_RESULT_PROCESS_KEY, None)
+    st.session_state.pop(CATALOG_ERROR_PROCESS_KEY, None)
+
+
+def process_catalog_upload(conn, selected_business_id, uploaded_catalog):
+    with st.spinner("Querying Snowflake for the last 24 months of sales..."):
+        sales_lookup = load_sales_lookup(
+            conn=conn,
+            business_id=selected_business_id,
+        )
+
+    with st.spinner("Updating workbook..."):
+        updated_file, summary = update_partner_catalog(
+            workbook_file=uploaded_catalog,
+            sales_lookup=sales_lookup,
+        )
+
+    return {
+        "file_bytes": updated_file.getvalue(),
+        "summary": summary,
+    }
+
+
+def render_catalog_result(result):
+    summary = result["summary"]
+
+    st.success("Workbook processed successfully.")
+
+    col1, col2 = st.columns(2)
+    col1.metric("UPCs in file", summary["total_rows"])
+    col2.metric("UPCs with zero sales", summary["zero_sales_rows"])
+
+    st.download_button(
+        label="Download updated workbook",
+        data=result["file_bytes"],
+        file_name="partner_catalog_updated.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        icon=":material/download:",
+        use_container_width=True,
+    )
+
+    if summary["missing_upcs"]:
+        with st.expander("UPCs not found in Snowflake sales data"):
+            st.write(pd.DataFrame({"UPC": summary["missing_upcs"]}))
+
+
 with st.container(border=True, key="snowflake_panel"):
     render_section_header(
         "01",
@@ -723,7 +796,11 @@ with st.container(border=True, key="catalog_panel"):
         "Upload the workbook and generate the zero-sales catalog update.",
         "Ready" if selected_business_id else "Waiting for business",
     )
-    uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
+    uploaded_catalog = st.file_uploader(
+        "Upload partner catalog (.xlsx)",
+        type=["xlsx"],
+        key="uploaded_catalog",
+    )
 
     if uploaded_catalog is not None:
         st.caption(f"Selected file: {uploaded_catalog.name}")
@@ -738,40 +815,43 @@ with st.container(border=True, key="catalog_panel"):
         use_container_width=True,
     )
 
-if process_clicked:
+catalog_process_key = get_catalog_process_key(selected_business_id, uploaded_catalog)
+
+if catalog_process_key is None:
+    clear_catalog_process_state()
+else:
+    previous_result_key = st.session_state.get(CATALOG_RESULT_PROCESS_KEY)
+    previous_error_key = st.session_state.get(CATALOG_ERROR_PROCESS_KEY)
+
+    if previous_result_key is not None and previous_result_key != catalog_process_key:
+        clear_catalog_process_state()
+        previous_result_key = None
+        previous_error_key = None
+
+    if previous_error_key is not None and previous_error_key != catalog_process_key:
+        st.session_state.pop(CATALOG_ERROR_PROCESS_KEY, None)
+        previous_error_key = None
+
+    should_process_catalog = process_clicked
+
+if catalog_process_key is not None and should_process_catalog:
     try:
-        with st.spinner("Querying Snowflake for the last 24 months of sales..."):
-            # selected_business_id will be used to scope this query once the
-            # Snowflake business filter is finalized.
-            sales_lookup = load_sales_lookup(conn=conn)
-
-        with st.spinner("Updating workbook..."):
-            updated_file, summary = update_partner_catalog(
-                workbook_file=uploaded_catalog,
-                sales_lookup=sales_lookup,
-            )
-
-        st.success("Workbook processed successfully.")
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("UPCs in file", summary["total_rows"])
-        col2.metric("UPCs with zero sales", summary["zero_sales_rows"])
-        col3.metric("UPCs found in Snowflake", summary["matched_rows"])
-        col4.metric("UPCs missing in Snowflake", summary["missing_rows"])
-
-        st.download_button(
-            label="Download updated workbook",
-            data=updated_file.getvalue(),
-            file_name="partner_catalog_updated.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            icon=":material/download:",
-            use_container_width=True,
+        result = process_catalog_upload(
+            conn=conn,
+            selected_business_id=selected_business_id,
+            uploaded_catalog=uploaded_catalog,
         )
-
-        if summary["missing_upcs"]:
-            with st.expander("UPCs not found in Snowflake sales data"):
-                st.write(pd.DataFrame({"UPC": summary["missing_upcs"]}))
-
+        st.session_state[CATALOG_RESULT_KEY] = result
+        st.session_state[CATALOG_RESULT_PROCESS_KEY] = catalog_process_key
+        st.session_state.pop(CATALOG_ERROR_PROCESS_KEY, None)
     except Exception as e:
+        st.session_state.pop(CATALOG_RESULT_KEY, None)
+        st.session_state.pop(CATALOG_RESULT_PROCESS_KEY, None)
+        st.session_state[CATALOG_ERROR_PROCESS_KEY] = catalog_process_key
         st.error(f"Something went wrong: {e}")
+
+if catalog_process_key is not None:
+    result = st.session_state.get(CATALOG_RESULT_KEY)
+    result_key = st.session_state.get(CATALOG_RESULT_PROCESS_KEY)
+    if result is not None and result_key == catalog_process_key:
+        render_catalog_result(result)
