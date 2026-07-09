@@ -3,6 +3,7 @@ import time
 import webbrowser
 from html import escape
 from importlib import reload
+from urllib.parse import urlparse
 
 import streamlit as st
 import pandas as pd
@@ -15,6 +16,7 @@ businesses = reload(businesses)
 
 st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
 WEBBROWSER_CAPTURE_LOCK = threading.Lock()
+LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
 def inject_styles():
@@ -363,8 +365,8 @@ render_app_header()
 with st.sidebar:
     st.header("Snowflake settings")
     st.caption(
-        "Each user signs in with their own Snowflake SSO session. "
-        "Shared secrets should include the account and role, not a user password."
+        "Local browser SSO is for development on one computer. Shared users "
+        "should open the deployed Streamlit app from Snowflake."
     )
     st.code(
         """# Optional for local development only:
@@ -406,6 +408,55 @@ def get_sso_base_config():
     config["authenticator"] = "externalbrowser"
     config.setdefault("login_timeout", 300)
     return config
+
+
+def get_request_hostname():
+    try:
+        current_url = st.context.url
+    except Exception:
+        return None
+
+    if not current_url:
+        return None
+
+    return urlparse(current_url).hostname
+
+
+def is_local_browser_request():
+    hostname = get_request_hostname()
+    if not hostname:
+        return True
+    return hostname.lower() in LOCAL_HOSTNAMES
+
+
+def get_streamlit_user_label():
+    try:
+        email = getattr(st.user, "email", None)
+        if email:
+            return email
+        if hasattr(st.user, "get"):
+            return st.user.get("email") or st.user.get("user_name")
+    except Exception:
+        return "current Streamlit user"
+    return "current Streamlit user"
+
+
+def get_streamlit_runtime_connection():
+    try:
+        conn = st.connection("snowflake")
+    except Exception as exc:
+        st.error("Snowflake is not connected for this Streamlit runtime.")
+        st.info(
+            "For shared use, deploy the app as Streamlit in Snowflake so users "
+            "sign in through Snowsight. For local development, run the app on "
+            "your own computer with `authenticator = \"externalbrowser\"`."
+        )
+        st.exception(exc)
+        return None, None
+
+    user_label = get_streamlit_user_label()
+    st.success(f"Connected through the Streamlit Snowflake runtime as {user_label}.")
+    return conn, user_label
 
 
 def normalize_snowflake_user(value):
@@ -500,19 +551,36 @@ def wait_for_auth_update(auth_state):
 def render_snowflake_sign_in():
     config = get_sso_base_config()
 
+    if not config.get("account"):
+        return get_streamlit_runtime_connection()
+
+    if not is_local_browser_request():
+        request_hostname = get_request_hostname() or "this shared host"
+        st.error("Snowflake browser SSO cannot complete from this shared Streamlit URL.")
+        st.info(
+            "The Snowflake `externalbrowser` login redirects back to `localhost` "
+            "on the browser's computer. Because this app is being viewed from "
+            f"`{request_hostname}`, that callback cannot reach the Streamlit "
+            "Python process."
+        )
+        st.warning(
+            "For multiple users, deploy this app in Streamlit in Snowflake and "
+            "share it from Snowsight. For local testing, each user must run the "
+            "app on their own computer."
+        )
+        return None, None
+
+    st.caption(
+        "Local development SSO only works when this browser and the Streamlit "
+        "app are running on the same computer."
+    )
+
     snowflake_user = st.text_input(
         "Snowflake email",
         key="snowflake_user",
         placeholder="name@company.com",
     )
     snowflake_user = normalize_snowflake_user(snowflake_user)
-
-    if not config.get("account"):
-        st.error(
-            "Snowflake account is not configured. Add the account, role, and "
-            "warehouse to .streamlit/secrets.toml, but leave out user/password."
-        )
-        return None, None
 
     if not snowflake_user:
         st.info("Enter your Snowflake email to load the business list.")
@@ -628,9 +696,9 @@ def select_business(conn, snowflake_user):
 with st.container(border=True, key="snowflake_panel"):
     render_section_header(
         "01",
-        "Snowflake sign-in",
-        "Each user connects with their own SSO session.",
-        "Private session",
+        "Snowflake connection",
+        "Connect locally for testing, or use the Snowflake-hosted app for shared access.",
+        "Connection check",
     )
     conn, snowflake_user = render_snowflake_sign_in()
 

@@ -30,9 +30,9 @@ The selected business ID is saved in Streamlit session state as `selected_busine
 
 ## Snowflake authentication
 
-The app requires each user to enter their own Snowflake email and complete SSO in the browser. The Snowflake connection is stored in that user's Streamlit session instead of being shared across everyone using the app.
+For shared team use, deploy the app as Streamlit in Snowflake and share it through Snowsight. Users sign in to Snowflake before opening the app, and the app uses Streamlit's Snowflake runtime connection.
 
-For local development, create `.streamlit/secrets.toml` with shared Snowflake account settings only. Do not include a `user` or `password`; each person signs in with their own Snowflake user:
+For local development, create `.streamlit/secrets.toml` with shared Snowflake account settings only. Do not include a `user` or `password`; the person running the app enters their own Snowflake email in the app:
 
 ```toml
 [connections.snowflake]
@@ -44,6 +44,8 @@ database = "YOUR_DATABASE"
 schema = "YOUR_SCHEMA"
 role = "H_DATASCI"
 ```
+
+Local `externalbrowser` SSO only works when the browser and Streamlit Python process are on the same computer. It should not be used as the sign-in flow for multiple users on a shared Streamlit server, because Snowflake redirects the browser back to `localhost`.
 
 When local SSO starts, the app shows an `Open Snowflake SSO` button. Open it, complete the Snowflake sign-in, then return to the app and refresh. The business dropdown will load for the signed-in Snowflake user.
 
