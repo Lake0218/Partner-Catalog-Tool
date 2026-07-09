@@ -6,7 +6,7 @@ A Streamlit in Snowflake app that reads UPCs from column A starting at row 3 in 
 
 - Upload the partner catalog `.xlsx`
 - Enter the Snowflake sales table and column names
-- The app queries Snowflake for sales totals over the last 12 months
+- The app queries Snowflake for sales totals over the last 24 months
 - The app updates column I on rows where UPC sales are zero or missing
 - Download the updated workbook
 
