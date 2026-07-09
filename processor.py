@@ -26,10 +26,11 @@ def run_snowflake_query(conn, sql):
     try:
         cur.execute(sql)
         rows = cur.fetchall()
+        columns = [column[0] for column in cur.description]
     finally:
         cur.close()
 
-    return pd.DataFrame(rows, columns=["UPC", "TOTAL_SALES"])
+    return pd.DataFrame(rows, columns=columns)
 
 
 def load_sales_lookup(conn, lookback_months=24):

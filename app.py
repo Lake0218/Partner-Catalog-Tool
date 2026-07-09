@@ -1,59 +1,375 @@
 import threading
 import time
 import webbrowser
+from html import escape
+from importlib import reload
 
 import streamlit as st
 import pandas as pd
 import snowflake.connector
 
+import businesses
 from processor import load_sales_lookup, update_partner_catalog
 
+businesses = reload(businesses)
+
 st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
+WEBBROWSER_CAPTURE_LOCK = threading.Lock()
+
+
+def inject_styles():
+    st.markdown(
+        """
+        <style>
+        :root {
+            --app-bg: #f7f0ff;
+            --panel: #fffdf8;
+            --panel-strong: #f0e3ff;
+            --panel-border: #d9c4ff;
+            --text: #33243f;
+            --muted: #6d5b7b;
+            --accent: #8b3dff;
+            --accent-dark: #6d28d9;
+            --accent-hover: #581cbe;
+            --sun: #ffbf47;
+            --coral: #ff6a3d;
+            --pink: #d946ef;
+            --teal: #137f73;
+            --ink: #281833;
+        }
+
+        .stApp {
+            background:
+                linear-gradient(180deg, #efe2ff 0%, #fff6eb 460px, var(--app-bg) 100%),
+                var(--app-bg);
+            color: var(--text);
+        }
+
+        .block-container {
+            max-width: 1180px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+        }
+
+        div[data-testid="stSidebar"] {
+            background: #f1e5ff;
+            border-right: 1px solid #d8c2ff;
+        }
+
+        div[data-testid="stSidebar"] * {
+            color: var(--text);
+        }
+
+        div[data-testid="stSidebar"] .stCodeBlock pre {
+            background: #fffdf8 !important;
+            border: 1px solid #d8c2ff;
+            border-radius: 8px;
+        }
+
+        .app-hero {
+            border: 1px solid var(--panel-border);
+            border-top: 5px solid var(--accent);
+            background:
+                radial-gradient(circle at top right, rgba(217, 70, 239, 0.20), transparent 30%),
+                radial-gradient(circle at 85% 75%, rgba(255, 106, 61, 0.16), transparent 24%),
+                var(--panel);
+            border-radius: 8px;
+            box-shadow: 0 18px 45px rgba(86, 42, 137, 0.14);
+            padding: 1.7rem 1.8rem 1.55rem;
+            margin-bottom: 1.1rem;
+        }
+
+        .app-eyebrow {
+            color: var(--accent-dark);
+            font-size: 0.76rem;
+            font-weight: 750;
+            letter-spacing: 0;
+            text-transform: uppercase;
+            margin-bottom: 0.35rem;
+        }
+
+        .app-title {
+            color: var(--ink);
+            font-size: clamp(2rem, 3.4vw, 3rem);
+            line-height: 1.04;
+            font-weight: 760;
+            letter-spacing: 0;
+            margin: 0;
+        }
+
+        .app-subtitle {
+            color: var(--muted);
+            max-width: 760px;
+            margin: 0.85rem 0 1.2rem;
+            font-size: 1rem;
+            line-height: 1.55;
+        }
+
+        .hero-facts {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .fact-card {
+            border: 1px solid #e4d5ff;
+            border-radius: 8px;
+            padding: 0.75rem 0.85rem;
+            background: rgba(255, 253, 248, 0.74);
+        }
+
+        .fact-label {
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0;
+            text-transform: uppercase;
+            margin-bottom: 0.2rem;
+        }
+
+        .fact-value {
+            color: var(--ink);
+            font-size: 1.02rem;
+            font-weight: 760;
+            line-height: 1.25;
+        }
+
+        .section-heading {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .section-title-group {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.85rem;
+        }
+
+        .step-index {
+            width: 2.35rem;
+            height: 2.35rem;
+            flex: 0 0 2.35rem;
+            border-radius: 8px;
+            display: grid;
+            place-items: center;
+            color: #fffaf2;
+            background: var(--accent);
+            font-size: 0.86rem;
+            font-weight: 780;
+            letter-spacing: 0;
+        }
+
+        .section-title {
+            color: var(--ink);
+            font-size: 1.12rem;
+            font-weight: 760;
+            line-height: 1.2;
+            margin-top: 0.1rem;
+        }
+
+        .section-copy {
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.4;
+            margin-top: 0.18rem;
+        }
+
+        .section-status {
+            border: 1px solid #dec9ff;
+            background: #f2e8ff;
+            color: var(--accent-dark);
+            border-radius: 999px;
+            padding: 0.32rem 0.62rem;
+            font-size: 0.78rem;
+            font-weight: 720;
+            white-space: nowrap;
+        }
+
+        div.st-key-snowflake_panel,
+        div.st-key-business_panel,
+        div.st-key-catalog_panel {
+            background: var(--panel);
+            border-color: var(--panel-border);
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(86, 42, 137, 0.10);
+            padding: 1.1rem 1.15rem;
+        }
+
+        div.st-key-snowflake_panel,
+        div.st-key-business_panel {
+            margin-bottom: 0.9rem;
+        }
+
+        .stButton > button,
+        .stDownloadButton > button,
+        .stLinkButton > a {
+            border-radius: 8px !important;
+            min-height: 2.65rem;
+            font-weight: 720 !important;
+        }
+
+        .stButton > button[kind="primary"],
+        .stDownloadButton > button[kind="primary"],
+        .stLinkButton > a[kind="primary"] {
+            background: var(--accent-dark) !important;
+            border-color: var(--accent-dark) !important;
+            color: #fffaf2 !important;
+        }
+
+        .stButton > button[kind="primary"]:hover,
+        .stDownloadButton > button[kind="primary"]:hover,
+        .stLinkButton > a[kind="primary"]:hover {
+            background: var(--accent-hover) !important;
+            border-color: var(--accent-hover) !important;
+            color: #fffaf2 !important;
+        }
+
+        .stTextInput input,
+        .stSelectbox div[data-baseweb="select"] > div,
+        .stFileUploader section {
+            border-radius: 8px !important;
+            border-color: #d8c2ff !important;
+            background-color: #fffdf8 !important;
+        }
+
+        div[data-testid="stMetric"] {
+            background: #fffdf8;
+            border: 1px solid #e4d5ff;
+            border-radius: 8px;
+            padding: 0.85rem 0.95rem;
+            box-shadow: 0 8px 22px rgba(86, 42, 137, 0.08);
+        }
+
+        div[data-testid="stAlert"] {
+            border-radius: 8px;
+        }
+
+        .stAlert {
+            border-radius: 8px;
+        }
+
+        @media (max-width: 760px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+            }
+
+            .app-hero {
+                padding: 1.25rem;
+            }
+
+            .hero-facts {
+                grid-template-columns: 1fr;
+            }
+
+            .section-heading {
+                display: block;
+            }
+
+            .section-status {
+                display: inline-block;
+                margin-top: 0.75rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_app_header():
+    st.markdown(
+        """
+        <div class="app-hero">
+            <div class="app-eyebrow">Partner catalog operations</div>
+            <h1 class="app-title">Zero-sales catalog review</h1>
+            <div class="app-subtitle">
+                Match catalog UPCs against Snowflake sales history and mark items with zero or missing sales.
+            </div>
+            <div class="hero-facts">
+                <div class="fact-card">
+                    <div class="fact-label">Sales window</div>
+                    <div class="fact-value">Last 24 months</div>
+                </div>
+                <div class="fact-card">
+                    <div class="fact-label">Catalog input</div>
+                    <div class="fact-value">UPCs from column A</div>
+                </div>
+                <div class="fact-card">
+                    <div class="fact-label">Workbook output</div>
+                    <div class="fact-value">Zero-sales flags in column I</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_section_header(step, title, copy, status):
+    st.markdown(
+        f"""
+        <div class="section-heading">
+            <div class="section-title-group">
+                <div class="step-index">{escape(step)}</div>
+                <div>
+                    <div class="section-title">{escape(title)}</div>
+                    <div class="section-copy">{escape(copy)}</div>
+                </div>
+            </div>
+            <div class="section-status">{escape(status)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_styles()
 
 
 class SnowflakeAuthState:
     def __init__(self):
         self.lock = threading.Lock()
         self.status = "idle"
+        self.user = None
         self.auth_url = None
         self.conn = None
         self.error = None
         self.thread = None
 
+    def close_connection(self):
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+
     def reset(self):
         with self.lock:
+            self.close_connection()
             self.status = "idle"
+            self.user = None
             self.auth_url = None
-            self.conn = None
             self.error = None
             self.thread = None
 
 
-@st.cache_resource(show_spinner=False)
-def get_externalbrowser_auth_state():
-    return SnowflakeAuthState()
-
-st.title("Partner Catalog Zero-Sales Tool")
-
-st.write(
-    "Upload the partner catalog Excel file. The app reads UPCs from column A "
-    "starting at row 3 and writes `0 USD` into column I when Snowflake sales "
-    "over the last 12 months equal zero."
-)
-
-uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
+render_app_header()
 
 with st.sidebar:
     st.header("Snowflake settings")
     st.caption(
-        "Authentication uses the Snowflake connection provided by Streamlit. "
-        "In Snowflake, no password secret is needed."
+        "Each user signs in with their own Snowflake SSO session. "
+        "Shared secrets should include the account and role, not a user password."
     )
     st.code(
         """# Optional for local development only:
 [connections.snowflake]
 account = "JD38204-MT76814"
-user = "L.HAWK@FETCHREWARDS.COM"
 authenticator = "externalbrowser"
 login_timeout = 300
 warehouse = "YOUR_WAREHOUSE"
@@ -63,12 +379,6 @@ role = "H_DATASCI"
 """,
         language="toml",
     )
-
-process_clicked = st.button(
-    "Process catalog",
-    type="primary",
-    disabled=uploaded_catalog is None,
-)
 
 def get_local_snowflake_config():
     try:
@@ -88,27 +398,63 @@ def get_local_snowflake_config():
     }
 
 
-def connect_with_captured_sso(config, auth_state):
-    original_open_new = webbrowser.open_new
+def get_sso_base_config():
+    config = get_local_snowflake_config()
+    config.pop("user", None)
+    config.pop("username", None)
+    config.pop("password", None)
+    config["authenticator"] = "externalbrowser"
+    config.setdefault("login_timeout", 300)
+    return config
 
-    def capture_auth_url(url):
+
+def normalize_snowflake_user(value):
+    return str(value or "").strip()
+
+
+def get_session_auth_state(snowflake_user):
+    session_user = normalize_snowflake_user(snowflake_user).lower()
+    auth_state = st.session_state.get("snowflake_auth_state")
+    auth_user = st.session_state.get("snowflake_auth_user")
+
+    if auth_state is None or auth_user != session_user:
+        if auth_state is not None:
+            auth_state.reset()
+        auth_state = SnowflakeAuthState()
+        st.session_state["snowflake_auth_state"] = auth_state
+        st.session_state["snowflake_auth_user"] = session_user
+
+    return auth_state
+
+
+def connect_with_captured_sso(config, auth_state):
+    original_open = webbrowser.open
+    original_open_new = webbrowser.open_new
+    original_open_new_tab = webbrowser.open_new_tab
+
+    def capture_auth_url(url, *args, **kwargs):
         with auth_state.lock:
             auth_state.auth_url = url
             auth_state.status = "waiting_for_sso"
         return True
 
-    try:
-        webbrowser.open_new = capture_auth_url
-        conn = snowflake.connector.connect(**config)
-        with auth_state.lock:
-            auth_state.conn = conn
-            auth_state.status = "connected"
-    except Exception as exc:
-        with auth_state.lock:
-            auth_state.error = exc
-            auth_state.status = "error"
-    finally:
-        webbrowser.open_new = original_open_new
+    with WEBBROWSER_CAPTURE_LOCK:
+        try:
+            webbrowser.open = capture_auth_url
+            webbrowser.open_new = capture_auth_url
+            webbrowser.open_new_tab = capture_auth_url
+            conn = snowflake.connector.connect(**config)
+            with auth_state.lock:
+                auth_state.conn = conn
+                auth_state.status = "connected"
+        except Exception as exc:
+            with auth_state.lock:
+                auth_state.error = exc
+                auth_state.status = "error"
+        finally:
+            webbrowser.open = original_open
+            webbrowser.open_new = original_open_new
+            webbrowser.open_new_tab = original_open_new_tab
 
 
 def start_externalbrowser_auth(config, auth_state):
@@ -116,9 +462,10 @@ def start_externalbrowser_auth(config, auth_state):
         if auth_state.status in {"starting", "waiting_for_sso"}:
             return
         auth_state.status = "starting"
+        auth_state.user = config["user"]
         auth_state.auth_url = None
         auth_state.error = None
-        auth_state.conn = None
+        auth_state.close_connection()
 
     thread = threading.Thread(
         target=connect_with_captured_sso,
@@ -130,73 +477,204 @@ def start_externalbrowser_auth(config, auth_state):
     thread.start()
 
 
-def get_externalbrowser_connection(config):
-    auth_state = get_externalbrowser_auth_state()
-
+def get_auth_snapshot(auth_state):
     with auth_state.lock:
-        if auth_state.conn is not None:
-            return auth_state.conn
+        return {
+            "status": auth_state.status,
+            "auth_url": auth_state.auth_url,
+            "conn": auth_state.conn,
+            "error": auth_state.error,
+            "user": auth_state.user,
+        }
 
-    start_externalbrowser_auth(config, auth_state)
 
+def wait_for_auth_update(auth_state):
     for _ in range(30):
-        with auth_state.lock:
-            if auth_state.auth_url or auth_state.conn is not None or auth_state.error:
-                break
+        snapshot = get_auth_snapshot(auth_state)
+        if snapshot["auth_url"] or snapshot["conn"] is not None or snapshot["error"]:
+            return snapshot
         time.sleep(0.1)
+    return get_auth_snapshot(auth_state)
 
-    with auth_state.lock:
-        status = auth_state.status
-        auth_url = auth_state.auth_url
-        conn = auth_state.conn
-        error = auth_state.error
 
-    if conn is not None:
-        return conn
+def render_snowflake_sign_in():
+    config = get_sso_base_config()
 
-    if status == "error":
+    snowflake_user = st.text_input(
+        "Snowflake email",
+        key="snowflake_user",
+        placeholder="name@company.com",
+    )
+    snowflake_user = normalize_snowflake_user(snowflake_user)
+
+    if not config.get("account"):
+        st.error(
+            "Snowflake account is not configured. Add the account, role, and "
+            "warehouse to .streamlit/secrets.toml, but leave out user/password."
+        )
+        return None, None
+
+    if not snowflake_user:
+        st.info("Enter your Snowflake email to load the business list.")
+        return None, None
+
+    config["user"] = snowflake_user
+    auth_state = get_session_auth_state(snowflake_user)
+    snapshot = get_auth_snapshot(auth_state)
+
+    if snapshot["conn"] is not None:
+        st.success(f"Signed into Snowflake as {snowflake_user}.")
+        if st.button(
+            "Sign out of Snowflake",
+            icon=":material/logout:",
+            use_container_width=True,
+        ):
+            auth_state.reset()
+            get_cached_businesses.clear()
+            st.rerun()
+        return snapshot["conn"], snowflake_user
+
+    if snapshot["status"] == "idle":
+        st.info("Start Snowflake SSO to load the business list.")
+        if st.button(
+            "Start Snowflake SSO",
+            type="primary",
+            icon=":material/login:",
+            use_container_width=True,
+        ):
+            start_externalbrowser_auth(config, auth_state)
+            snapshot = wait_for_auth_update(auth_state)
+        else:
+            return None, snowflake_user
+    elif snapshot["status"] in {"starting", "waiting_for_sso"}:
+        snapshot = wait_for_auth_update(auth_state)
+
+    if snapshot["conn"] is not None:
+        st.success(f"Signed into Snowflake as {snowflake_user}.")
+        return snapshot["conn"], snowflake_user
+
+    if snapshot["status"] == "error":
         st.error("Snowflake sign-in did not complete.")
-        st.exception(error)
-        if st.button("Start Snowflake sign-in again"):
+        st.exception(snapshot["error"])
+        if st.button(
+            "Start Snowflake sign-in again",
+            icon=":material/refresh:",
+            use_container_width=True,
+        ):
             auth_state.reset()
             st.rerun()
-        st.stop()
+        return None, snowflake_user
 
-    st.warning("Snowflake needs browser SSO before the catalog can be processed.")
-    if auth_url:
-        st.link_button("Open Snowflake SSO", auth_url, type="primary")
+    st.warning("Snowflake SSO is waiting for you to finish sign-in.")
+    if snapshot["auth_url"]:
+        auth_url = snapshot["auth_url"]
+        st.link_button(
+            "Open Snowflake SSO",
+            auth_url,
+            type="primary",
+            icon=":material/open_in_new:",
+            use_container_width=True,
+        )
         st.info(
             "After the Snowflake sign-in tab says login succeeded, return here "
-            "and click Process catalog again."
+            "and refresh the app. The business dropdown will load for your account."
         )
     else:
-        st.info("Preparing the Snowflake SSO link. Click Process catalog again in a moment.")
-    st.stop()
+        st.info("Preparing the Snowflake SSO link. Refresh the app in a moment.")
+    return None, snowflake_user
 
 
-def get_snowflake_connection():
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cached_businesses(snowflake_user, _conn):
+    return businesses.load_businesses(_conn)
+
+
+def select_business(conn, snowflake_user):
     try:
-        config = get_local_snowflake_config()
-        authenticator = str(config.get("authenticator", "")).lower()
-        if config and authenticator == "externalbrowser":
-            return get_externalbrowser_connection(config)
-        if config:
-            return snowflake.connector.connect(**config)
-        return st.connection("snowflake")
+        with st.spinner("Loading businesses from Snowflake..."):
+            businesses = get_cached_businesses(snowflake_user.lower(), conn)
     except Exception as exc:
-        st.error(
-            "Could not create the Snowflake connection. In Snowflake, make sure "
-            "the Streamlit app has a query warehouse. For local development, add "
-            "a [connections.snowflake] block to .streamlit/secrets.toml."
-        )
+        st.error("Could not load businesses from Snowflake.")
         st.exception(exc)
-        st.stop()
+        return None, None
+
+    if not businesses:
+        st.warning("No businesses were returned from Snowflake.")
+        st.session_state.pop("selected_business_name", None)
+        st.session_state.pop("selected_business_id", None)
+        return None, None
+
+    business_by_id = {business["id"]: business for business in businesses}
+    selected_business_id = st.selectbox(
+        "Search or select business",
+        options=list(business_by_id),
+        index=None,
+        placeholder="Search for a business",
+        format_func=lambda business_id: business_by_id[business_id]["label"],
+    )
+
+    if not selected_business_id:
+        st.session_state.pop("selected_business_name", None)
+        st.session_state.pop("selected_business_id", None)
+        return None, None
+
+    selected_business_name = business_by_id[selected_business_id]["name"]
+    st.session_state["selected_business_name"] = selected_business_name
+    st.session_state["selected_business_id"] = selected_business_id
+    st.caption(f"Business ID: {selected_business_id}")
+    return selected_business_name, selected_business_id
+
+
+with st.container(border=True, key="snowflake_panel"):
+    render_section_header(
+        "01",
+        "Snowflake sign-in",
+        "Each user connects with their own SSO session.",
+        "Private session",
+    )
+    conn, snowflake_user = render_snowflake_sign_in()
+
+selected_business_name, selected_business_id = None, None
+
+with st.container(border=True, key="business_panel"):
+    render_section_header(
+        "02",
+        "Business",
+        "Search the Snowflake business list and lock in the business ID.",
+        "Ready" if conn is not None else "Waiting for sign-in",
+    )
+    if conn is not None:
+        selected_business_name, selected_business_id = select_business(conn, snowflake_user)
+    else:
+        st.info("Sign into Snowflake above to search for a business.")
+
+with st.container(border=True, key="catalog_panel"):
+    render_section_header(
+        "03",
+        "Catalog upload",
+        "Upload the workbook and generate the zero-sales catalog update.",
+        "Ready" if selected_business_id else "Waiting for business",
+    )
+    uploaded_catalog = st.file_uploader("Upload partner catalog (.xlsx)", type=["xlsx"])
+
+    if uploaded_catalog is not None:
+        st.caption(f"Selected file: {uploaded_catalog.name}")
+    elif selected_business_id:
+        st.caption("Choose a partner catalog workbook to continue.")
+
+    process_clicked = st.button(
+        "Process catalog",
+        type="primary",
+        icon=":material/play_arrow:",
+        disabled=uploaded_catalog is None or selected_business_id is None,
+        use_container_width=True,
+    )
 
 if process_clicked:
     try:
-        conn = get_snowflake_connection()
-
-        with st.spinner("Querying Snowflake for the last 12 months of sales..."):
+        with st.spinner("Querying Snowflake for the last 24 months of sales..."):
+            # selected_business_id will be used to scope this query once the
+            # Snowflake business filter is finalized.
             sales_lookup = load_sales_lookup(conn=conn)
 
         with st.spinner("Updating workbook..."):
@@ -218,6 +696,9 @@ if process_clicked:
             data=updated_file.getvalue(),
             file_name="partner_catalog_updated.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            icon=":material/download:",
+            use_container_width=True,
         )
 
         if summary["missing_upcs"]:
