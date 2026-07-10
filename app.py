@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import re
 import threading
@@ -5,6 +6,7 @@ import time
 import webbrowser
 from html import escape
 from importlib import reload
+from pathlib import Path
 from urllib.parse import urlparse
 
 import streamlit as st
@@ -12,11 +14,15 @@ import pandas as pd
 import snowflake.connector
 
 import businesses
-from processor import load_sales_lookup, update_partner_catalog
+import processor
 
 businesses = reload(businesses)
+processor = reload(processor)
 
-st.set_page_config(page_title="Partner Catalog Zero-Sales Tool", layout="wide")
+APP_DIR = Path(__file__).parent
+LOGO_PATH = APP_DIR / "assets" / "catalog_coroner_logo.png"
+
+st.set_page_config(page_title="Catalog Coroner", page_icon=str(LOGO_PATH), layout="wide")
 WEBBROWSER_CAPTURE_LOCK = threading.Lock()
 LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 CATALOG_RESULT_KEY = "catalog_process_result"
@@ -31,25 +37,25 @@ def inject_styles():
         """
         <style>
         :root {
-            --app-bg: #f7f0ff;
-            --panel: #fffdf8;
-            --panel-strong: #f0e3ff;
-            --panel-border: #d9c4ff;
-            --text: #33243f;
-            --muted: #6d5b7b;
-            --accent: #8b3dff;
-            --accent-dark: #6d28d9;
-            --accent-hover: #581cbe;
+            --app-bg: #f6f0ff;
+            --panel: #fffbff;
+            --panel-strong: #efe2ff;
+            --panel-border: #c9a7f2;
+            --text: #2d2138;
+            --muted: #655371;
+            --accent: #6B1CCF;
+            --accent-dark: #5716aa;
+            --accent-hover: #471187;
             --sun: #ffbf47;
             --coral: #ff6a3d;
             --pink: #d946ef;
             --teal: #137f73;
-            --ink: #281833;
+            --ink: #23152d;
         }
 
         .stApp {
             background:
-                linear-gradient(180deg, #efe2ff 0%, #fff6eb 460px, var(--app-bg) 100%),
+                linear-gradient(180deg, #eadcff 0%, #fff7ed 500px, var(--app-bg) 100%),
                 var(--app-bg);
             color: var(--text);
         }
@@ -61,8 +67,8 @@ def inject_styles():
         }
 
         div[data-testid="stSidebar"] {
-            background: #f1e5ff;
-            border-right: 1px solid #d8c2ff;
+            background: #f0e5ff;
+            border-right: 1px solid #c9a7f2;
         }
 
         div[data-testid="stSidebar"] * {
@@ -70,8 +76,8 @@ def inject_styles():
         }
 
         div[data-testid="stSidebar"] .stCodeBlock pre {
-            background: #fffdf8 !important;
-            border: 1px solid #d8c2ff;
+            background: #fffbff !important;
+            border: 1px solid #c9a7f2;
             border-radius: 8px;
         }
 
@@ -79,13 +85,29 @@ def inject_styles():
             border: 1px solid var(--panel-border);
             border-top: 5px solid var(--accent);
             background:
-                radial-gradient(circle at top right, rgba(217, 70, 239, 0.20), transparent 30%),
-                radial-gradient(circle at 85% 75%, rgba(255, 106, 61, 0.16), transparent 24%),
+                radial-gradient(circle at top right, rgba(107, 28, 207, 0.18), transparent 32%),
+                radial-gradient(circle at 85% 78%, rgba(255, 191, 71, 0.22), transparent 24%),
+                linear-gradient(135deg, rgba(255, 251, 255, 0.96), rgba(247, 239, 255, 0.96)),
                 var(--panel);
             border-radius: 8px;
-            box-shadow: 0 18px 45px rgba(86, 42, 137, 0.14);
+            box-shadow: 0 18px 45px rgba(107, 28, 207, 0.15);
             padding: 1.7rem 1.8rem 1.55rem;
             margin-bottom: 1.1rem;
+        }
+
+        .app-brand-row {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 0.7rem;
+        }
+
+        .app-logo {
+            display: block;
+            width: clamp(86px, 12vw, 128px);
+            height: auto;
+            flex: 0 0 auto;
+            filter: drop-shadow(0 10px 16px rgba(40, 24, 51, 0.16));
         }
 
         .app-eyebrow {
@@ -121,10 +143,10 @@ def inject_styles():
         }
 
         .fact-card {
-            border: 1px solid #e4d5ff;
+            border: 1px solid #d8c1f8;
             border-radius: 8px;
             padding: 0.75rem 0.85rem;
-            background: rgba(255, 253, 248, 0.74);
+            background: rgba(255, 251, 255, 0.78);
         }
 
         .fact-label {
@@ -165,10 +187,11 @@ def inject_styles():
             display: grid;
             place-items: center;
             color: #fffaf2;
-            background: var(--accent);
+            background: linear-gradient(135deg, var(--accent), #8f3cff);
             font-size: 0.86rem;
             font-weight: 780;
             letter-spacing: 0;
+            box-shadow: 0 8px 18px rgba(107, 28, 207, 0.24);
         }
 
         .section-title {
@@ -187,8 +210,8 @@ def inject_styles():
         }
 
         .section-status {
-            border: 1px solid #dec9ff;
-            background: #f2e8ff;
+            border: 1px solid #cbaef2;
+            background: #eee1ff;
             color: var(--accent-dark);
             border-radius: 999px;
             padding: 0.32rem 0.62rem;
@@ -203,7 +226,7 @@ def inject_styles():
             background: var(--panel);
             border-color: var(--panel-border);
             border-radius: 8px;
-            box-shadow: 0 10px 30px rgba(86, 42, 137, 0.10);
+            box-shadow: 0 10px 30px rgba(107, 28, 207, 0.10);
             padding: 1.1rem 1.15rem;
         }
 
@@ -223,16 +246,16 @@ def inject_styles():
         .stButton > button[kind="primary"],
         .stDownloadButton > button[kind="primary"],
         .stLinkButton > a[kind="primary"] {
-            background: var(--accent-dark) !important;
-            border-color: var(--accent-dark) !important;
+            background: var(--accent) !important;
+            border-color: var(--accent) !important;
             color: #fffaf2 !important;
         }
 
         .stButton > button[kind="primary"]:hover,
         .stDownloadButton > button[kind="primary"]:hover,
         .stLinkButton > a[kind="primary"]:hover {
-            background: var(--accent-hover) !important;
-            border-color: var(--accent-hover) !important;
+            background: var(--accent-dark) !important;
+            border-color: var(--accent-dark) !important;
             color: #fffaf2 !important;
         }
 
@@ -242,17 +265,17 @@ def inject_styles():
             justify-content: center;
             min-height: 2.65rem;
             width: 100%;
-            border: 1px solid var(--accent-dark);
+            border: 1px solid var(--accent);
             border-radius: 8px;
-            background: var(--accent-dark);
+            background: var(--accent);
             color: #fffaf2 !important;
             font-weight: 720;
             text-decoration: none !important;
         }
 
         .sso-open-link:hover {
-            background: var(--accent-hover);
-            border-color: var(--accent-hover);
+            background: var(--accent-dark);
+            border-color: var(--accent-dark);
             color: #fffaf2 !important;
             text-decoration: none !important;
         }
@@ -261,16 +284,16 @@ def inject_styles():
         .stSelectbox div[data-baseweb="select"] > div,
         .stFileUploader section {
             border-radius: 8px !important;
-            border-color: #d8c2ff !important;
-            background-color: #fffdf8 !important;
+            border-color: #c9a7f2 !important;
+            background-color: #fffbff !important;
         }
 
         div[data-testid="stMetric"] {
-            background: #fffdf8;
-            border: 1px solid #e4d5ff;
+            background: #fffbff;
+            border: 1px solid #d8c1f8;
             border-radius: 8px;
             padding: 0.85rem 0.95rem;
-            box-shadow: 0 8px 22px rgba(86, 42, 137, 0.08);
+            box-shadow: 0 8px 22px rgba(107, 28, 207, 0.08);
         }
 
         div[data-testid="stAlert"] {
@@ -289,6 +312,14 @@ def inject_styles():
 
             .app-hero {
                 padding: 1.25rem;
+            }
+
+            .app-brand-row {
+                align-items: flex-start;
+            }
+
+            .app-logo {
+                width: 82px;
             }
 
             .hero-facts {
@@ -311,26 +342,35 @@ def inject_styles():
 
 
 def render_app_header():
+    logo_data_uri = get_logo_data_uri()
+    logo_markup = ""
+    if logo_data_uri:
+        logo_markup = (
+            f'<img class="app-logo" src="{logo_data_uri}" alt="Catalog Coroner logo" />'
+        )
+
     st.markdown(
-        """
+        f"""
         <div class="app-hero">
-            <div class="app-eyebrow">Partner catalog operations</div>
-            <h1 class="app-title">Zero-sales catalog review</h1>
-            <div class="app-subtitle">
-                Match catalog UPCs against Snowflake sales history and mark items with zero or missing sales.
+            <div class="app-brand-row">
+                {logo_markup}
+                <div>
+                    <h1 class="app-title">Catalog Coroner</h1>
+                </div>
             </div>
-            <div class="hero-facts">
-                <div class="fact-card">
-                    <div class="fact-label">Sales window</div>
-                    <div class="fact-value">Last 24 months</div>
+            <div>
+                <div class="app-subtitle">
+                    Tags products that have not Fetched sales in the last 24 months, excluding UPCs created within the last 6 months
                 </div>
-                <div class="fact-card">
-                    <div class="fact-label">Catalog input</div>
-                    <div class="fact-value">UPCs from column A</div>
-                </div>
-                <div class="fact-card">
-                    <div class="fact-label">Workbook output</div>
-                    <div class="fact-value">Zero-sales flags in column I</div>
+                <div class="hero-facts">
+                    <div class="fact-card">
+                        <div class="fact-label">Sales window</div>
+                        <div class="fact-value">Last 24 months</div>
+                    </div>
+                    <div class="fact-card">
+                        <div class="fact-label">Workbook output</div>
+                        <div class="fact-value">Flags 0 USD in price column</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -358,6 +398,16 @@ def render_section_header(step, title, copy, status):
 
 
 inject_styles()
+
+
+@st.cache_data(show_spinner=False)
+def get_logo_data_uri():
+    if not LOGO_PATH.exists():
+        return None
+
+    logo_bytes = LOGO_PATH.read_bytes()
+    encoded_logo = base64.b64encode(logo_bytes).decode("ascii")
+    return f"data:image/png;base64,{encoded_logo}"
 
 
 class SnowflakeAuthState:
@@ -728,7 +778,7 @@ def render_snowflake_sign_in():
     )
 
     snowflake_user = st.text_input(
-        "Snowflake email",
+        "Email",
         key="snowflake_user",
         placeholder="name@company.com",
     )
@@ -869,13 +919,13 @@ def clear_catalog_process_state():
 
 def process_catalog_upload(conn, selected_business_id, uploaded_catalog):
     with st.spinner("Querying Snowflake for the last 24 months of sales..."):
-        sales_lookup = load_sales_lookup(
+        sales_lookup = processor.load_sales_lookup(
             conn=conn,
             business_id=selected_business_id,
         )
 
     with st.spinner("Updating workbook..."):
-        updated_file, summary = update_partner_catalog(
+        updated_file, summary = processor.update_partner_catalog(
             workbook_file=uploaded_catalog,
             sales_lookup=sales_lookup,
         )
@@ -896,13 +946,19 @@ def render_catalog_result(result):
     col2.metric("UPCs with zero sales", summary["zero_sales_rows"])
 
     st.download_button(
-        label="Download updated workbook",
+        label="Download updated Partner Catalog",
         data=result["file_bytes"],
         file_name="partner_catalog_updated.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        on_click="ignore",
         type="primary",
         icon=":material/download:",
         use_container_width=True,
+    )
+    st.info(
+        "Upload this file into your Partner Catalog. The identified UPCs will have "
+        "their price updated to \\$0.00. After the upload is complete, filter the "
+        "Price column to equal \\$0 and mass delete the flagged UPCs from your catalog."
     )
 
     if summary["missing_upcs"]:
@@ -914,7 +970,7 @@ with st.container(border=True, key="snowflake_panel"):
     render_section_header(
         "01",
         "Snowflake connection",
-        "Connect locally for testing, or use the Snowflake-hosted app for shared access.",
+        "Sign into Okta SSO to access this tool",
         "Connection check",
     )
     conn, snowflake_user = render_snowflake_sign_in()
@@ -925,7 +981,7 @@ with st.container(border=True, key="business_panel"):
     render_section_header(
         "02",
         "Business",
-        "Search the Snowflake business list and lock in the business ID.",
+        "Search for your Partner to recover its Business ID.",
         "Ready" if conn is not None else "Waiting for sign-in",
     )
     if conn is not None:
@@ -936,8 +992,8 @@ with st.container(border=True, key="business_panel"):
 with st.container(border=True, key="catalog_panel"):
     render_section_header(
         "03",
-        "Catalog upload",
-        "Upload the workbook and generate the zero-sales catalog update.",
+        "Partner Catalog Upload",
+        "The Catalog Coroner will perform an autopsy on your catalog to identify which UPCs have no sales activity. Once the examination is complete, download the updated Partner Catalog to see the results.",
         "Ready" if selected_business_id else "Waiting for business",
     )
     uploaded_catalog = st.file_uploader(

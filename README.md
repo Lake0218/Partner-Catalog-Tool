@@ -1,4 +1,4 @@
-# Partner Catalog Zero-Sales Tool
+# Catalog Coroner
 
 A Streamlit in Snowflake app that reads UPCs from column A starting at row 3 in a partner catalog Excel file, checks 24-month sales totals in Snowflake, and writes `0 USD` into column I for UPCs with zero sales.
 
