@@ -1,4 +1,5 @@
 import hashlib
+import re
 import threading
 import time
 import webbrowser
@@ -21,6 +22,8 @@ LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 CATALOG_RESULT_KEY = "catalog_process_result"
 CATALOG_RESULT_PROCESS_KEY = "catalog_process_result_key"
 CATALOG_ERROR_PROCESS_KEY = "catalog_process_error_key"
+SNOWFLAKE_BLOCKED_SOURCE_RE = re.compile(r"Incoming request with IP/Token\s+([^ ]+)")
+SSO_STATUS_POLL_SECONDS = 2
 
 
 def inject_styles():
@@ -233,6 +236,27 @@ def inject_styles():
             color: #fffaf2 !important;
         }
 
+        .sso-open-link {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 2.65rem;
+            width: 100%;
+            border: 1px solid var(--accent-dark);
+            border-radius: 8px;
+            background: var(--accent-dark);
+            color: #fffaf2 !important;
+            font-weight: 720;
+            text-decoration: none !important;
+        }
+
+        .sso-open-link:hover {
+            background: var(--accent-hover);
+            border-color: var(--accent-hover);
+            color: #fffaf2 !important;
+            text-decoration: none !important;
+        }
+
         .stTextInput input,
         .stSelectbox div[data-baseweb="select"] > div,
         .stFileUploader section {
@@ -342,6 +366,7 @@ class SnowflakeAuthState:
         self.status = "idle"
         self.user = None
         self.auth_url = None
+        self.browser_open_attempted = False
         self.conn = None
         self.error = None
         self.thread = None
@@ -360,6 +385,7 @@ class SnowflakeAuthState:
             self.status = "idle"
             self.user = None
             self.auth_url = None
+            self.browser_open_attempted = False
             self.error = None
             self.thread = None
 
@@ -492,16 +518,57 @@ def get_streamlit_runtime_connection():
     return conn, user_label
 
 
+def get_snowflake_network_policy_source(exc):
+    match = SNOWFLAKE_BLOCKED_SOURCE_RE.search(str(exc))
+    if not match:
+        return None
+    return match.group(1).rstrip(".,")
+
+
+def is_snowflake_network_policy_error(exc):
+    message = str(exc)
+    return (
+        "Incoming request with IP/Token" in message
+        or "is not allowed to access Snowflake" in message
+    )
+
+
+def render_configured_snowflake_connection_error(exc):
+    if is_snowflake_network_policy_error(exc):
+        blocked_source = get_snowflake_network_policy_source(exc)
+        st.error("Snowflake blocked this Streamlit server by network policy.")
+        if blocked_source:
+            st.info(
+                "Ask a Snowflake administrator to allow this Streamlit deployment's "
+                f"current outbound source `{blocked_source}` for the relevant "
+                "Snowflake user or account network policy."
+            )
+        else:
+            st.info(
+                "Ask a Snowflake administrator to allow this Streamlit deployment's "
+                "outbound source for the relevant Snowflake user or account "
+                "network policy."
+            )
+        st.warning(
+            "Changing the Snowflake password, role, or warehouse will not fix this "
+            "specific failure. Snowflake is rejecting the source network before the "
+            "session is created."
+        )
+        return
+
+    st.error("Could not connect to Snowflake with the configured deployment secrets.")
+    st.info(
+        "For shared Streamlit deployments, configure a server-side Snowflake "
+        "user/password, key pair, or OAuth credential in app secrets. Do not "
+        "use `authenticator = \"externalbrowser\"` on a shared URL."
+    )
+
+
 def get_configured_snowflake_connection(config):
     try:
         conn = snowflake.connector.connect(**config)
     except Exception as exc:
-        st.error("Could not connect to Snowflake with the configured deployment secrets.")
-        st.info(
-            "For shared Streamlit deployments, configure a server-side Snowflake "
-            "user/password, key pair, or OAuth credential in app secrets. Do not "
-            "use `authenticator = \"externalbrowser\"` on a shared URL."
-        )
+        render_configured_snowflake_connection_error(exc)
         st.exception(exc)
         return None, None
 
@@ -535,9 +602,19 @@ def connect_with_captured_sso(config, auth_state):
     original_open_new_tab = webbrowser.open_new_tab
 
     def capture_auth_url(url, *args, **kwargs):
+        should_open_browser = False
         with auth_state.lock:
             auth_state.auth_url = url
             auth_state.status = "waiting_for_sso"
+            if not auth_state.browser_open_attempted:
+                auth_state.browser_open_attempted = True
+                should_open_browser = True
+
+        if should_open_browser:
+            try:
+                original_open(url, new=2)
+            except Exception:
+                pass
         return True
 
     with WEBBROWSER_CAPTURE_LOCK:
@@ -584,6 +661,7 @@ def get_auth_snapshot(auth_state):
         return {
             "status": auth_state.status,
             "auth_url": auth_state.auth_url,
+            "browser_open_attempted": auth_state.browser_open_attempted,
             "conn": auth_state.conn,
             "error": auth_state.error,
             "user": auth_state.user,
@@ -597,6 +675,23 @@ def wait_for_auth_update(auth_state):
             return snapshot
         time.sleep(0.1)
     return get_auth_snapshot(auth_state)
+
+
+def rerun_sso_status_check():
+    time.sleep(SSO_STATUS_POLL_SECONDS)
+    st.rerun()
+
+
+def render_sso_link(auth_url):
+    escaped_url = escape(auth_url, quote=True)
+    st.markdown(
+        f"""
+        <a class="sso-open-link" href="{escaped_url}" target="_blank" rel="noopener noreferrer">
+            Open Snowflake SSO / Okta
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_snowflake_sign_in():
@@ -693,19 +788,15 @@ def render_snowflake_sign_in():
     st.warning("Snowflake SSO is waiting for you to finish sign-in.")
     if snapshot["auth_url"]:
         auth_url = snapshot["auth_url"]
-        st.link_button(
-            "Open Snowflake SSO",
-            auth_url,
-            type="primary",
-            icon=":material/open_in_new:",
-            use_container_width=True,
-        )
+        render_sso_link(auth_url)
         st.info(
-            "After the Snowflake sign-in tab says login succeeded, return here "
-            "and refresh the app. The business dropdown will load for your account."
+            "Complete the Snowflake/Okta sign-in in the browser tab. This app will "
+            "keep checking automatically and load the business dropdown when the "
+            "Snowflake session is ready."
         )
     else:
-        st.info("Preparing the Snowflake SSO link. Refresh the app in a moment.")
+        st.info("Preparing the Snowflake SSO link. This app will check again automatically.")
+    rerun_sso_status_check()
     return None, snowflake_user
 
 

@@ -49,6 +49,10 @@ schema = "YOUR_SCHEMA"
 role = "H_DATASCI"
 ```
 
+If Snowflake returns an error like `Incoming request with IP/Token ... is not allowed to access Snowflake`, the app reached Snowflake but Snowflake's network policy blocked the shared Streamlit server's outbound source. Ask a Snowflake administrator to allow the source shown in the error, for example `34.83.176.217`, on the relevant account or user network policy.
+
+For new Snowflake network policy configuration, Snowflake recommends creating network rules and adding them to the policy.
+
 For local development, create `.streamlit/secrets.toml` with shared Snowflake account settings only. Do not include a `user` or `password`; the person running the app enters their own Snowflake email in the app:
 
 ```toml
